@@ -20,9 +20,7 @@ controller](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configur
 
 ## In practice
 
-```bash
 #Install the ingress-nginx controller
-
 
 #if you have helm
 ```bash
