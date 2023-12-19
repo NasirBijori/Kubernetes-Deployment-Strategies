@@ -1,97 +1,130 @@
-# Kubernetes-Deployment-Strategies
+Kubernetes deployment strategies
+================================
 
-Canary deployment using the nginx-ingress controller
-====================================================
+> In Kubernetes there are a few different ways to release an application, you have
+to carefully choose the right strategy to make your infrastructure resilient.
 
-> In the following example, we shift traffic between 2 applications using the
-[canary annotations of the Nginx ingress
-controller](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#canary).
->
-> ## Steps to follow
+- [recreate](recreate/): terminate the old version and release the new one
+- [ramped](ramped/): release a new version on a rolling update fashion, one
+  after the other
+- [blue/green](blue-green/): release a new version alongside the old version
+  then switch traffic
+- [canary](canary/): release a new version to a subset of users, then proceed
+  to a full rollout
+- [a/b testing](ab-testing/): release a new version to a subset of users in a
+  precise way (HTTP headers, cookie, weight, etc.). This doesn’t come out of the
+  box with Kubernetes, it imply extra work to setup a smarter
+  loadbalancing system (Istio, Linkerd, Traeffik, custom nginx/haproxy, etc).
+- [shadow](shadow/): release a new version alongside the old version. Incoming
+  traffic is mirrored to the new version and doesn't impact the
+  response.
 
-1. version 1 is serving traffic
-1. deploy version 2
-1. create a new "canary" ingress with traffic splitting enabled
-1. wait enought time to confirm that version 2 is stable and not throwing
-   unexpected errors
-1. delete the canary ingress
-1. point the main application ingress to send traffic to version 2
-1. shutdown version 1
+![deployment strategy decision diagram](decision-diagram.png)
 
-## In practice
+Before experimenting, checkout the following resources:
+- [CNCF presentation](https://www.youtube.com/watch?v=1oPhfKye5Pg)
+- [CNCF presentation slides](https://www.slideshare.net/EtienneTremel/kubernetes-deployment-strategies-cncf-webinar)
+- [Kubernetes deployment strategies](https://container-solutions.com/kubernetes-deployment-strategies/)
+- [Six Strategies for Application Deployment](https://thenewstack.io/deployment-strategies/).
+- [Canary deployment using Istio and Helm](https://github.com/etiennetremel/istio-cross-namespace-canary-release-demo)
+- [Automated rollback of Helm releases based on logs or metrics](https://container-solutions.com/automated-rollback-helm-releases-based-logs-metrics/)
 
-#Install the ingress-nginx controller
+## Getting started
 
-#if you have helm
-```bash
-helm upgrade --install ingress-nginx ingress-nginx \
-  --repo https://kubernetes.github.io/ingress-nginx \
-  --namespace ingress-nginx --create-namespace
+These examples were created and tested on [Minikube](http://github.com/kubernetes/minikube)
+running with Kubernetes v1.25.2 and [Rancher Desktop](https://rancherdesktop.io/) running
+with Kubernetes 1.23.6.
+
+On MacOS the hypervisor VM does not have external connectivity so docker image pulls
+will fail. To resolve this, install another driver such as
+[VirtualBox](https://www.virtualbox.org/) and add `--vm-driver virtualbox`
+to the command to be able to pull images.
+
+```
+$ minikube start --kubernetes-version v1.25.2 --memory 8192 --cpus 2
 ```
 
-#If you don't have Helm or if you prefer to use a YAML manifest, you can run the following command instead:
-```bash
-$ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/cloud/deploy.yaml
+## Visualizing using Prometheus and Grafana
+
+The following steps describe how to setup Prometheus and Grafana to visualize
+the progress and performance of a deployment.
+
+### Install Helm3
+
+To install Helm3, follow the instructions provided on their
+[website](https://github.com/kubernetes/helm/releases).
+
+### Install Prometheus
+
+```
+$ helm install prometheus prometheus-community/prometheus \
+    --create-namespace --namespace=monitoring
 ```
 
-#Installing on minikube
-```bash
-minikube addons enable ingress
+### Install Grafana
+
+```
+$ helm install grafana \
+    --namespace=monitoring \
+    --set=adminUser=admin \
+    --set=adminPassword=admin \
+    --set=service.type=NodePort \
+    grafana/grafana
 ```
 
-# Expose the ingress-nginx
-```bash
-kubectl expose deployment \
-    -n ingress-nginx nginx-ingress-controller \
-    --port 80 \
-    --type LoadBalancer \
-    --name ingress-nginx
+### Setup Grafana
+
+Now that Prometheus and Grafana are up and running, you can access Grafana:
+
+```
+$ minikube service grafana
 ```
 
-# Wait for nginx to be running
-```bash
-kubectl rollout status deploy nginx-ingress-controller -n ingress-nginx -w
+To login, username: `admin`, password: `admin`.
+
+Then you need to connect Grafana to Prometheus, to do so, add a DataSource:
+
 ```
-deployment "nginx-ingress-controller" successfully rolled out
-
-
-# Deploy version 1 and expose the service via an ingress
-```bash
-$ kubectl apply -f ./app-v1.yaml -f ./ingress-v1.yaml
-```
-
-# Deploy version 2
-```bash
-$ kubectl apply -f ./app-v2.yaml
+Name: prometheus
+Type: Prometheus
+Url: http://prometheus-server
+Access: Server
 ```
 
-# In a different terminal you can check that requests are responding with version 1
-```bash
-$ nginx_service=$(minikube service ingress-nginx -n ingress-nginx --url)
-$ while sleep 0.1; do curl "$nginx_service" -H "Host: my-app.com"; done
+Create a dashboard with a Time series or import
+the [JSON export](grafana-dashboard.json). Use the following query:
+
+```
+sum(rate(http_requests_total{app="my-app"}[2m])) by (version)
 ```
 
-# Create a canary ingress in order to split traffic: 90% to v1, 10% to v2
-```bash
-$ kubectl apply -f ./ingress-v2-canary.yaml
-```
-# Now you should see that the traffic is being splitted
+Since we installed Prometheus with default settings, it is using the default scrape
+interval of `1m` so the range cannot be lower than that.
 
-```bash
-# When you are happy, delete the canary ingress
-$ kubectl delete -f ./ingress-v2-canary.yaml
-```
+To have a better overview of the version, add `{{version}}` in the legend field.
 
-```bash
-# Then finish the rollout, set 100% traffic to version 2
-$ kubectl apply -f ./ingress-v2.yaml
-```
+#### Example graph
 
-### Cleanup
+Recreate:
 
-```bash
-$ kubectl delete all -l app=my-app
-```
+![Kubernetes deployment recreate](recreate/grafana-recreate.png)
 
+Ramped:
 
+![Kubernetes deployment ramped](ramped/grafana-ramped.png)
 
+Blue/Green:
+
+![Kubernetes deployment blue-green](blue-green/grafana-blue-green.png)
+
+Canary:
+
+![Kubernetes deployment canary](canary/grafana-canary.png)
+
+A/B testing:
+
+![kubernetes ab-testing deployment](ab-testing/grafana-ab-testing.png)
+
+Shadow:
+
+![kubernetes shadow deployment](shadow/grafana-shadow.png)
